@@ -15,38 +15,38 @@ jobs:
       - name: Checkout source
         uses: actions/checkout@v4
 
+
       - name: Download KeePass 2.58 portable
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $ProgressPreference = "SilentlyContinue"
 
-          $url = "https://downloads.sourceforge.net/project/keepass/KeePass%202.x/2.58/KeePass-2.58.zip"
+          $url = "https://keepass.info/filepool/KeePass-2.58.zip"
           $zip = Join-Path $env:RUNNER_TEMP "KeePass-2.58.zip"
           $dest = Join-Path $env:RUNNER_TEMP "KeePass258"
 
-          Write-Host "Downloading KeePass 2.58..."
           Invoke-WebRequest -Uri $url -OutFile $zip
 
-          if (-not (Test-Path $zip)) {
-            throw "KeePass archive was not downloaded."
+          $size = (Get-Item $zip).Length
+          Write-Host "Downloaded file size: $size bytes"
+
+          if ($size -ne 3225346) {
+            Write-Host "First bytes of downloaded file:"
+            Get-Content $zip -Encoding Byte -TotalCount 200 |
+              Format-Hex
+            throw "Unexpected archive size. Expected 3225346 bytes."
           }
 
-          if ((Get-Item $zip).Length -lt 1000000) {
-            throw "Downloaded file is too small to be a valid KeePass ZIP."
-          }
-
-          Write-Host "Extracting archive..."
           Expand-Archive -Path $zip -DestinationPath $dest -Force
 
-          $exe = Get-ChildItem -Path $dest -Filter "KeePass.exe" -Recurse |
+          $exe = Get-ChildItem $dest -Filter "KeePass.exe" -Recurse |
             Select-Object -First 1
 
           if (-not $exe) {
-            throw "KeePass.exe was not found in the archive."
+            throw "KeePass.exe not found in archive."
           }
 
-          Write-Host "KeePass found at: $($exe.Directory.FullName)"
           "KeePassDir=$($exe.Directory.FullName)" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
