@@ -1,3 +1,4 @@
+
 name: Build KeePass plugin
 
 on:
@@ -15,12 +16,22 @@ jobs:
       - name: Download KeePass 2.58 portable
         shell: pwsh
         run: |
-          $url = "https://keepass.info/filepool/KeePass-2.58.zip"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\KeePass-2.58.zip"
-          Expand-Archive -Path "$env:RUNNER_TEMP\KeePass-2.58.zip" -DestinationPath "$env:RUNNER_TEMP\KeePass258" -Force
-          $exe = Get-ChildItem "$env:RUNNER_TEMP\KeePass258" -Filter "KeePass.exe" -Recurse | Select-Object -First 1
-          if (-not $exe) { throw "KeePass.exe was not found in downloaded archive." }
-          "KeePassDir=$($exe.Directory.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $url = "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.58/KeePass-2.58.zip/download"
+          $zip = Join-Path $env:RUNNER_TEMP "KeePass-2.58.zip"
+          $dest = Join-Path $env:RUNNER_TEMP "KeePass258"
+
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest -Force
+
+          $exe = Get-ChildItem $dest -Filter "KeePass.exe" -Recurse |
+            Select-Object -First 1
+
+          if (-not $exe) {
+            throw "KeePass.exe not found. Downloaded archive may be invalid."
+          }
+
+          "KeePassDir=$($exe.Directory.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
