@@ -1,14 +1,16 @@
-
 name: Build KeePass plugin
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "master" ]
+    branches:
+      - main
+      - master
 
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - name: Checkout source
         uses: actions/checkout@v4
@@ -16,20 +18,35 @@ jobs:
       - name: Download KeePass 2.58 portable
         shell: pwsh
         run: |
-          $url = "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.58/KeePass-2.58.zip/download"
+          $ErrorActionPreference = "Stop"
+          $ProgressPreference = "SilentlyContinue"
+
+          $url = "https://downloads.sourceforge.net/project/keepass/KeePass%202.x/2.58/KeePass-2.58.zip"
           $zip = Join-Path $env:RUNNER_TEMP "KeePass-2.58.zip"
           $dest = Join-Path $env:RUNNER_TEMP "KeePass258"
 
+          Write-Host "Downloading KeePass 2.58..."
           Invoke-WebRequest -Uri $url -OutFile $zip
+
+          if (-not (Test-Path $zip)) {
+            throw "KeePass archive was not downloaded."
+          }
+
+          if ((Get-Item $zip).Length -lt 1000000) {
+            throw "Downloaded file is too small to be a valid KeePass ZIP."
+          }
+
+          Write-Host "Extracting archive..."
           Expand-Archive -Path $zip -DestinationPath $dest -Force
 
-          $exe = Get-ChildItem $dest -Filter "KeePass.exe" -Recurse |
+          $exe = Get-ChildItem -Path $dest -Filter "KeePass.exe" -Recurse |
             Select-Object -First 1
 
           if (-not $exe) {
-            throw "KeePass.exe not found. Downloaded archive may be invalid."
+            throw "KeePass.exe was not found in the archive."
           }
 
+          Write-Host "KeePass found at: $($exe.Directory.FullName)"
           "KeePassDir=$($exe.Directory.FullName)" |
             Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -37,8 +54,29 @@ jobs:
         uses: microsoft/setup-msbuild@v2
 
       - name: Build plugin
-        shell: cmd
-        run: msbuild PasswordAlphabetHighlighter.csproj /t:Rebuild /p:Configuration=Release /p:KeePassDir="%KeePassDir%"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          msbuild PasswordAlphabetHighlighter.csproj `
+            /t:Rebuild `
+            /p:Configuration=Release `
+            "/p:KeePassDir=$env:KeePassDir"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Plugin compilation failed."
+          }
+
+      - name: Verify DLL
+        shell: pwsh
+        run: |
+          $dll = "bin/Release/PasswordAlphabetHighlighter.dll"
+
+          if (-not (Test-Path $dll)) {
+            throw "Build finished but the expected DLL was not found: $dll"
+          }
+
+          Get-Item $dll | Format-List FullName, Length
 
       - name: Upload DLL artifact
         uses: actions/upload-artifact@v4
@@ -46,3 +84,4 @@ jobs:
           name: PasswordAlphabetHighlighter-DLL
           path: bin/Release/PasswordAlphabetHighlighter.dll
           if-no-files-found: error
+          retention-days: 14
