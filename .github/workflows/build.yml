@@ -1,3 +1,4 @@
+
 name: Build KeePass plugin
 
 on:
@@ -17,56 +18,67 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Download and verify KeePass 2.58
+      - name: Restore KeePass API from NuGet
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $ProgressPreference = "SilentlyContinue"
 
-          $url = "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.58/KeePass-2.58.zip/download"
-          $zip = Join-Path $env:RUNNER_TEMP "KeePass-2.58.zip"
-          $dest = Join-Path $env:RUNNER_TEMP "KeePass258"
+          $probeDir = Join-Path $env:RUNNER_TEMP "KeePassPackageProbe"
+          $packagesDir = Join-Path $env:RUNNER_TEMP "nuget-packages"
+          $probeProject = Join-Path $probeDir "KeePassPackageProbe.csproj"
 
-          Write-Host "Downloading KeePass 2.58..."
+          New-Item -ItemType Directory -Path $probeDir -Force | Out-Null
 
-          & curl.exe --location --fail --retry 3 --retry-all-errors --silent --show-error --user-agent "Mozilla/5.0" --output "$zip" "$url"
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <TargetFramework>net48</TargetFramework>
+            </PropertyGroup>
+            <ItemGroup>
+              <PackageReference Include="KeePass" Version="2.58.0" />
+            </ItemGroup>
+          </Project>
+          '@ | Set-Content -Path $probeProject -Encoding utf8
+
+          Write-Host "Restoring KeePass 2.58.0 from NuGet..."
+
+          dotnet restore "$probeProject" --packages "$packagesDir" --verbosity minimal
 
           if ($LASTEXITCODE -ne 0) {
-            throw "curl.exe download failed with exit code $LASTEXITCODE"
+            throw "NuGet restore failed with exit code $LASTEXITCODE"
           }
 
-          if (-not (Test-Path $zip)) {
-            throw "Downloaded archive was not created."
+          $packageDir = Join-Path $packagesDir "keepass\2.58.0"
+
+          if (-not (Test-Path $packageDir)) {
+            throw "KeePass NuGet package directory not found: $packageDir"
           }
 
-          $size = (Get-Item $zip).Length
-          Write-Host "Downloaded size: $size bytes"
+          $exe = Get-ChildItem -Path $packageDir -Filter "KeePass.exe" -File -Recurse |
+            Select-Object -First 1
 
-          if ($size -ne 3225346) {
-            throw "Invalid archive size: $size bytes. Expected 3225346."
-          }
-
-          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
-          $expected = "A613CA206FBF5875AD8FE5E440A76418CE01135D3304DC56A0DF12255D83FE07"
-
-          if ($hash -ne $expected) {
-            throw "SHA-256 verification failed. Actual hash: $hash"
-          }
-
-          Write-Host "Archive verified successfully."
-
-          Expand-Archive -Path $zip -DestinationPath $dest -Force
-
-          $exe = Get-ChildItem $dest -Filter "KeePass.exe" -Recurse | Select-Object -First 1
+          $lib = Get-ChildItem -Path $packageDir -Filter "KeePassLib.dll" -File -Recurse |
+            Select-Object -First 1
 
           if (-not $exe) {
-            throw "KeePass.exe not found in the archive."
+            throw "KeePass.exe not found in the restored package."
           }
 
-          $keepassDir = $exe.Directory.FullName
-          "KeePassDir=$keepassDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          if (-not $lib) {
+            throw "KeePassLib.dll not found in the restored package."
+          }
 
-          Write-Host "KeePass directory: $keepassDir"
+          $keepassDir = Join-Path $env:RUNNER_TEMP "KeePassBuildReferences"
+          New-Item -ItemType Directory -Path $keepassDir -Force | Out-Null
+
+          Copy-Item -Path $exe.FullName -Destination $keepassDir -Force
+          Copy-Item -Path $lib.FullName -Destination $keepassDir -Force
+
+          "KeePassDir=$keepassDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+          Write-Host "KeePass API references prepared successfully."
+          Write-Host "KeePassDir=$keepassDir"
 
       - name: Build plugin
         shell: pwsh
@@ -74,17 +86,25 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           if (-not $env:KeePassDir) {
-            throw "KeePassDir environment variable is not set."
+            throw "KeePassDir is not set."
           }
 
           if (-not (Test-Path ".\PasswordAlphabetHighlighter.csproj")) {
             throw "PasswordAlphabetHighlighter.csproj not found in repository root."
           }
 
+          if (-not (Test-Path (Join-Path $env:KeePassDir "KeePass.exe"))) {
+            throw "KeePass.exe reference is missing."
+          }
+
+          if (-not (Test-Path (Join-Path $env:KeePassDir "KeePassLib.dll"))) {
+            throw "KeePassLib.dll reference is missing."
+          }
+
           msbuild ".\PasswordAlphabetHighlighter.csproj" /restore "/p:KeePassDir=$env:KeePassDir" /p:Configuration=Release /verbosity:minimal
 
           if ($LASTEXITCODE -ne 0) {
-            exit $LASTEXITCODE
+            throw "MSBuild failed with exit code $LASTEXITCODE"
           }
 
       - name: Upload plugin DLL
