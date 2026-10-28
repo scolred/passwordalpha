@@ -1,4 +1,3 @@
-
 name: Build KeePass plugin
 
 on:
@@ -13,63 +12,80 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      - name: Download KeePass 2.58
+      - name: Download and verify KeePass 2.58
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           $ProgressPreference = "SilentlyContinue"
 
-          $url = "https://downloads.sourceforge.net/project/keepass/KeePass%202.x/2.58/KeePass-2.58.zip"
+          $url = "https://sourceforge.net/projects/keepass/files/KeePass%202.x/2.58/KeePass-2.58.zip/download"
           $zip = Join-Path $env:RUNNER_TEMP "KeePass-2.58.zip"
           $dest = Join-Path $env:RUNNER_TEMP "KeePass258"
 
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $zip `
-            -MaximumRedirection 10 `
-            -UserAgent "Mozilla/5.0"
+          Write-Host "Downloading KeePass 2.58..."
+
+          & curl.exe --location --fail --retry 3 --retry-all-errors --silent --show-error --user-agent "Mozilla/5.0" --output "$zip" "$url"
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "curl.exe download failed with exit code $LASTEXITCODE"
+          }
+
+          if (-not (Test-Path $zip)) {
+            throw "Downloaded archive was not created."
+          }
 
           $size = (Get-Item $zip).Length
-          Write-Host "Downloaded file size: $size bytes"
+          Write-Host "Downloaded size: $size bytes"
 
           if ($size -ne 3225346) {
-            $bytes = [System.IO.File]::ReadAllBytes($zip)
-            $previewLength = [Math]::Min(200, $bytes.Length)
-            Write-Host ([System.Text.Encoding]::UTF8.GetString($bytes, 0, $previewLength))
-            throw "Invalid KeePass archive size. Expected 3225346 bytes."
+            throw "Invalid archive size: $size bytes. Expected 3225346."
           }
 
-          $sha256 = (Get-FileHash $zip -Algorithm SHA256).Hash
+          $hash = (Get-FileHash $zip -Algorithm SHA256).Hash
           $expected = "A613CA206FBF5875AD8FE5E440A76418CE01135D3304DC56A0DF12255D83FE07"
 
-          if ($sha256 -ne $expected) {
-            throw "KeePass archive SHA-256 verification failed: $sha256"
+          if ($hash -ne $expected) {
+            throw "SHA-256 verification failed. Actual hash: $hash"
           }
+
+          Write-Host "Archive verified successfully."
 
           Expand-Archive -Path $zip -DestinationPath $dest -Force
 
-          $exe = Get-ChildItem $dest -Filter "KeePass.exe" -Recurse |
-            Select-Object -First 1
+          $exe = Get-ChildItem $dest -Filter "KeePass.exe" -Recurse | Select-Object -First 1
 
           if (-not $exe) {
-            throw "KeePass.exe not found in archive."
+            throw "KeePass.exe not found in the archive."
           }
 
-          "KeePassDir=$($exe.Directory.FullName)" |
-            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $keepassDir = $exe.Directory.FullName
+          "KeePassDir=$keepassDir" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
-          Write-Host "KeePass directory: $($exe.Directory.FullName)"
+          Write-Host "KeePass directory: $keepassDir"
 
       - name: Build plugin
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          msbuild .\PasswordAlphabetHighlighter.csproj /restore /p:KeePassDir="$env:KeePassDir" /p:Configuration=Release /verbosity:minimal
+
+          if (-not $env:KeePassDir) {
+            throw "KeePassDir environment variable is not set."
+          }
+
+          if (-not (Test-Path ".\PasswordAlphabetHighlighter.csproj")) {
+            throw "PasswordAlphabetHighlighter.csproj not found in repository root."
+          }
+
+          msbuild ".\PasswordAlphabetHighlighter.csproj" /restore "/p:KeePassDir=$env:KeePassDir" /p:Configuration=Release /verbosity:minimal
+
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
 
       - name: Upload plugin DLL
         uses: actions/upload-artifact@v4
